@@ -6,6 +6,7 @@ import argparse
 from __init__ import __version__
 
 default_cmd = 'terminal length 0\n'
+default_timeout = 1
 
 
 def getPassword(args, enable=False):
@@ -36,16 +37,24 @@ def getPassword(args, enable=False):
 
 
 def login(server, password, username=False, enpass=False):
-    tn = telnetlib.Telnet(server)
-    if password:
-        tn.read_until('Password:')
-        tn.write(password + '\n')
-    if enpass:
-        tn.write('enable\n')
-        tn.read_until('Password:')
-        tn.write(enpass + '\n')
-    tn.write(default_cmd)
-    return tn
+    from sys import stderr as err
+    import socket
+
+    try:
+        tn = telnetlib.Telnet(server, timeout=default_timeout)
+
+        if password:
+            tn.read_until('Password:')
+            tn.write(password + '\n')
+        if enpass:
+            tn.write('enable\n')
+            tn.read_until('Password:')
+            tn.write(enpass + '\n')
+        tn.write(default_cmd)
+        return tn
+    except socket.timeout as e:
+        err.write("ERROR: %s\n" % e)
+        exit(1)
 
 
 def execCommand(session, cmd):
@@ -56,8 +65,8 @@ def execCommand(session, cmd):
 
 
 def backup(args):
-    enable = True
     cmd = 'show running-config\n'
+    enable = True
     password, enpass = getPassword(args, enable)
     session = login(args.server, password, args.username, enpass)
     stream = execCommand(session, cmd)
@@ -89,40 +98,49 @@ def checkConfig(filename):
         import configparser as configparser
     conf = configparser.SafeConfigParser(allow_no_value=False)
     conf.read(filename)
+
     try:
         server = conf.get('global', 'server')
     except configparser.NoOptionError:
         server = False
+
     try:
         username = conf.get('auth', 'username')
     except configparser.NoOptionError:
         username = False
+
     try:
         password = conf.get('auth', 'password')
     except configparser.NoOptionError:
         password = False
+
     try:
         enpass = conf.get('auth', 'enpass')
     except configparser.NoOptionError:
         enpass = False
+
     return server, password, enpass, username
 
 
 def setoption(obj, keyword, prefix=False, required=False):
+
     if keyword == 'server':
         obj.add_argument(
             '-r', dest='server', required=True,
             help='specify switch hostname or IP address')
+
     if keyword == 'username':
         obj.add_argument('-u', dest='username',
                          help='switch username')
+
     if keyword == 'password':
         group = obj.add_mutually_exclusive_group(required=True)
         group.add_argument('-p', dest='password',
                            help='switch password')
         group.add_argument('-P', action='store_true',
                            help='switch password prompt')
-    if keyword == 'enable':
+
+    if keyword == 'enpass':
         group = obj.add_mutually_exclusive_group(required=True)
         group.add_argument('-e', dest='enpass',
                            help='switch enable password')
@@ -130,24 +148,35 @@ def setoption(obj, keyword, prefix=False, required=False):
                            help='switch enable password prompt')
 
 
-def conn_options(obj, server=False, password=False,
+def conn_options(obj, server=False, enable=False, password=False,
                  enpass=False, username=False):
-    if server and username and password and enpass:
-        obj.set_defaults(server=server, username=username,
-                         password=password, enpass=enpass)
-    elif server and password and enpass:
-        obj.set_defaults(server=server, password=password,
-                         enpass=enpass)
-    elif server and password:
-        obj.set_defaults(server=server, password=password)
 
+    if enable:
+        if server and username and password and enpass:
+            obj.set_defaults(server=server, username=username,
+                             password=password, enpass=enpass)
+
+        elif server and password and enpass:
+            obj.set_defaults(server=server, password=password,
+                             enpass=enpass)
+    else:
+        if server and password:
+            obj.set_defaults(server=server, password=password)
+
+    # when not setting [global].server in ${HOME}/.nwclirc
     if not server:
         setoption(obj, 'server')
+
+    # when not setting [auth].username in ${HOME}/.nwclirc
     if not username:
         setoption(obj, 'username')
+
+    # when not setting [auth].password in ${HOME}/.nwclirc
     if not password:
         setoption(obj, 'password')
-    if not enpass:
+
+    # when not setting [auth].enpass in ${HOME}/.nwclirc
+    if enable and not enpass:
         setoption(obj, 'enpass')
 
 
@@ -171,8 +200,7 @@ def parse_options():
     # Backup running configuration
     sub_backup = subprs.add_parser('backup',
                                    help='backup running-configuration')
-    conn_options(sub_backup, server, password, enpass=enpass)
-    setoption(sub_backup, 'enable')
+    conn_options(sub_backup, server, True, password, enpass, username)
     sub_backup.set_defaults(func=backup)
 
     sub_show = subprs.add_parser('show',
@@ -182,13 +210,13 @@ def parse_options():
     # Show interface status
     subshow_int = subshow_prs.add_parser(
         'int', help='show interface status')
-    conn_options(subshow_int, server, password, username)
+    conn_options(subshow_int, server, False, password, username=username)
     subshow_int.set_defaults(func=showint)
 
     # Show mac address-table dynamic
     subshow_mac = subshow_prs.add_parser(
         'mac', help='show mac address-table dynamic')
-    conn_options(subshow_mac, server, password, username)
+    conn_options(subshow_mac, server, False, password, username=username)
     subshow_mac.set_defaults(func=showmac)
 
     args = prs.parse_args()
